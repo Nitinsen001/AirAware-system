@@ -12,22 +12,22 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error
 # ==========================================================================
 
 def preprocess_data(df):
-    
+
     df = df.copy()
-    
-    # data conversion
+
+    # Date conversion
     df["Date"] = pd.to_datetime(df["Date"])
-    
-    #sorting
+
+    # Sort
     df = df.sort_values("Date")
-    
-    # remove duplicates
+
+    # Remove duplicates
     df = df.drop_duplicates()
-    
-    # missing values handling
-    df = df.fillna(method="ffill")
-    df = df.fillna(method="bfill")
-    
+
+    # Forward & Backward fill (Latest Pandas)
+    df = df.ffill()
+    df = df.bfill()
+
     return df
 
 # ==============================================================================
@@ -35,22 +35,31 @@ def preprocess_data(df):
 # ==============================================================================
 
 def feature_engineering(df):
-    
+
     df = df.copy()
-    
+
     df["year"] = df["Date"].dt.year
     df["month"] = df["Date"].dt.month
     df["day"] = df["Date"].dt.day
+
+    # Day of week
     df["day_of_week"] = df["Date"].dt.dayofweek
-    df["day_of_week"] = df["Date"].dt.isocalendar().week
-    
-    df["is_weekend"] = df["day_of_week"].apply(lambda x:1 if x>=5 else 0)
-    
-    # polution interaction features
+
+    # Week of year
+    df["week_of_year"] = df["Date"].dt.isocalendar().week.astype(int)
+
+    # Weekend
+    df["is_weekend"] = (df["day_of_week"] >= 5).astype(int)
+
+    # Avoid division by zero
     df["PM_ratio"] = df["PM2.5"] / (df["PM10"] + 1)
-    
-    df["gas_polution"] = df["NO2"] + df["SO2"] + df["CO"]
-    
+
+    df["gas_pollution"] = (
+        df["NO2"].fillna(0)
+        + df["SO2"].fillna(0)
+        + df["CO"].fillna(0)
+    )
+
     return df
 
 # ================================================================================
@@ -163,34 +172,48 @@ st.sidebar.markdown("- **Hazardous**: >200")
 # -------------------------
 # Data Processing
 # -------------------------
-city_df = df[df["City"] == city][["Date","AQI","PM2.5","PM10","NO2","SO2","CO"]].dropna()
+city_df = df[df["City"] == city].copy()
+
+cols = ["AQI","PM2.5","PM10","NO2","SO2","CO"]
+
+for col in cols:
+    city_df[col] = city_df[col].ffill().bfill()
+
+city_df = city_df.dropna(subset=["AQI"])
+
+city_df = city_df[["Date","AQI","PM2.5","PM10","NO2","SO2","CO"]]
 
 city_df = city_df.rename(columns={
-    "Date":"ds",
-    "AQI":"y"
+    "Date": "ds",
+    "AQI": "y"
 })
+
+if city_df.empty:
+    st.error("No AQI data available for selected city.")
+    st.stop()
 
 # -------------------------
 # Train Model
 # -------------------------
 def Train_prphet(city_df):
-    prophet_df = city_df[["ds","y","PM2.5","PM10","NO2","SO2","CO"]]
-    
+
+    prophet_df = city_df.copy()
+
     model = Prophet(
         yearly_seasonality=True,
         weekly_seasonality=True,
         changepoint_prior_scale=0.05
     )
-    
+
     model.add_regressor("PM2.5")
     model.add_regressor("PM10")
     model.add_regressor("NO2")
     model.add_regressor("SO2")
     model.add_regressor("CO")
-    
+
     model.fit(prophet_df)
-    
-    return model,prophet_df
+
+    return model, prophet_df
 
 model,prophet_df = Train_prphet(city_df)
 
@@ -201,11 +224,12 @@ future = model.make_future_dataframe(periods=7)
 
 future["PM2.5"] = prophet_df["PM2.5"].iloc[-1]
 future["PM10"] = prophet_df["PM10"].iloc[-1]
-future["SO2"] = prophet_df["SO2"].iloc[-1]
 future["NO2"] = prophet_df["NO2"].iloc[-1]
+future["SO2"] = prophet_df["SO2"].iloc[-1]
 future["CO"] = prophet_df["CO"].iloc[-1]
 
 forecast = model.predict(future)
+
 
 pred = forecast[["ds","yhat"]].tail(7)
 
